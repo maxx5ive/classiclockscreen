@@ -10,7 +10,8 @@ jobs:
     steps:
       - name: Descargar código
         uses: actions/checkout@v4
-         - name: Seleccionar Xcode 15.4
+
+      - name: Seleccionar Xcode 15.4
         run: |
           sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer
           xcodebuild -version
@@ -26,64 +27,40 @@ jobs:
           git clone --recursive https://github.com/theos/theos.git "$GITHUB_WORKSPACE/theos"
           test -f "$GITHUB_WORKSPACE/theos/makefiles/common.mk"
 
-          - name: Instalar y corregir SDK de iOS 10.3
+      - name: Instalar y corregir SDK de iOS 10.3
+        shell: bash
         run: |
           rm -rf "$GITHUB_WORKSPACE/theos/sdks"
           git clone --depth 1 https://github.com/theos/sdks.git "$GITHUB_WORKSPACE/theos/sdks"
 
-          test -d "$GITHUB_WORKSPACE/theos/sdks/iPhoneOS10.3.sdk"
+          SDK="$GITHUB_WORKSPACE/theos/sdks/iPhoneOS10.3.sdk"
+          test -d "$SDK"
 
-          python3 - <<'PY'
-          from pathlib import Path
-
-          sdk = Path("theos/sdks/iPhoneOS10.3.sdk")
-
-          for file in sdk.rglob("*.tbd"):
-              try:
-                  lines = file.read_text().splitlines(keepends=True)
-              except (UnicodeDecodeError, OSError):
-                  continue
-
-              corrected = []
-
-              for line in lines:
-                  if "archs:" in line:
-                      line = line.replace(", i386, x86_64", "")
-                      line = line.replace("i386, x86_64, ", "")
-                      line = line.replace(", i386", "")
-                      line = line.replace(", x86_64", "")
-                  corrected.append(line)
-
-              file.write_text("".join(corrected))
-          PY
+          while IFS= read -r -d '' file; do
+            sed -i '' \
+              -e 's/, i386, x86_64//g' \
+              -e 's/i386, x86_64, //g' \
+              -e 's/, i386//g' \
+              -e 's/, x86_64//g' \
+              "$file"
+          done < <(find "$SDK" -type f -name '*.tbd' -print0)
 
           echo "Comprobación de libobjc:"
-          head -n 5 "$GITHUB_WORKSPACE/theos/sdks/iPhoneOS10.3.sdk/usr/lib/libobjc.A.tbd"
+          head -n 6 "$SDK/usr/lib/libobjc.A.tbd"
 
       - name: Adaptar proyecto antiguo
         run: |
           export THEOS="$GITHUB_WORKSPACE/theos"
 
-          # Sustituir las rutas relativas antiguas de Theos
           find . -type f -name Makefile -exec \
             sed -i '' 's|include theos/makefiles/common.mk|include $(THEOS)/makefiles/common.mk|g' {} +
 
-          # El repositorio abierto no contiene estos tres subproyectos
           sed -i '' '/^SUBPROJECTS += extrainst_$/d' Makefile
           sed -i '' '/^SUBPROJECTS += prerm$/d' Makefile
           sed -i '' '/^SUBPROJECTS += classiclockscreenextractlegacy$/d' Makefile
 
-          # El iPhone 5s usa arm64
           sed -i '' 's/^ARCHS = armv7 arm64$/ARCHS = arm64/' classiclockscreensettings/Makefile
-
-          # Identificar nuestra compilación
           sed -i '' 's/^Version:.*/Version: 4.0-oss/' control
-
-          echo "Makefile principal:"
-          grep -n "common.mk\|SUBPROJECTS" Makefile
-
-          echo "Makefile de ajustes:"
-          grep -n "ARCHS\|common.mk" classiclockscreensettings/Makefile
 
       - name: Compilar paquete rootful
         run: |
