@@ -10,6 +10,10 @@ jobs:
     steps:
       - name: Descargar código
         uses: actions/checkout@v4
+         - name: Seleccionar Xcode 15.4
+        run: |
+          sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer
+          xcodebuild -version
 
       - name: Instalar herramientas
         run: |
@@ -22,11 +26,39 @@ jobs:
           git clone --recursive https://github.com/theos/theos.git "$GITHUB_WORKSPACE/theos"
           test -f "$GITHUB_WORKSPACE/theos/makefiles/common.mk"
 
-      - name: Instalar SDK de iOS 10.3
+          - name: Instalar y corregir SDK de iOS 10.3
         run: |
           rm -rf "$GITHUB_WORKSPACE/theos/sdks"
           git clone --depth 1 https://github.com/theos/sdks.git "$GITHUB_WORKSPACE/theos/sdks"
+
           test -d "$GITHUB_WORKSPACE/theos/sdks/iPhoneOS10.3.sdk"
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          sdk = Path("theos/sdks/iPhoneOS10.3.sdk")
+
+          for file in sdk.rglob("*.tbd"):
+              try:
+                  lines = file.read_text().splitlines(keepends=True)
+              except (UnicodeDecodeError, OSError):
+                  continue
+
+              corrected = []
+
+              for line in lines:
+                  if "archs:" in line:
+                      line = line.replace(", i386, x86_64", "")
+                      line = line.replace("i386, x86_64, ", "")
+                      line = line.replace(", i386", "")
+                      line = line.replace(", x86_64", "")
+                  corrected.append(line)
+
+              file.write_text("".join(corrected))
+          PY
+
+          echo "Comprobación de libobjc:"
+          head -n 5 "$GITHUB_WORKSPACE/theos/sdks/iPhoneOS10.3.sdk/usr/lib/libobjc.A.tbd"
 
       - name: Adaptar proyecto antiguo
         run: |
