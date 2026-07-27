@@ -1,0 +1,51 @@
+name: Build ClassicLockScreen
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+
+    steps:
+      - name: Descargar código
+        uses: actions/checkout@v4
+
+      - name: Instalar herramientas
+        run: |
+          brew update
+          brew install ldid xz dpkg
+
+      - name: Instalar Theos
+        run: |
+          rm -rf theos
+          git clone --recursive https://github.com/theos/theos.git theos
+
+      - name: Instalar SDK de iOS 10.3
+        run: |
+          rm -rf theos/sdks
+          git clone --depth 1 https://github.com/theos/sdks.git theos/sdks
+          test -d theos/sdks/iPhoneOS10.3.sdk
+
+      - name: Preparar ClassicLockScreen para iOS 10
+        run: |
+          printf 'TARGET = iphone:clang:10.3:10.0\n' | cat - Makefile > Makefile.tmp
+          mv Makefile.tmp Makefile
+          sed -i '' 's/^Version:.*/Version: 4.0-oss/' control
+
+      - name: Compilar paquete rootful
+        run: |
+          export THEOS="$GITHUB_WORKSPACE/theos"
+          make clean
+          make package FINALPACKAGE=1
+
+      - name: Mostrar archivo generado
+        run: |
+          find packages -name "*.deb" -print
+
+      - name: Guardar archivo DEB
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClassicLockScreen-deb
+          path: packages/*.deb
+          if-no-files-found: error
