@@ -26,41 +26,59 @@ extern "C" BOOL CLSShouldPlayLockSounds();
 }
 
 -(BOOL)attemptUnlockWithPasscode:(id)arg1 {
-	if (%orig){
-		CSAwayController *awayController = [CSAwayController sharedAwayController];
-		if ([awayController isLocked]){
-			[awayController _sendToDeviceLockOwnerDeviceUnlockSucceeded];
-			if (CLSShouldPlayLockSounds())
-	        	AudioServicesPlaySystemSound(1101);
+	BOOL success = %orig;
 
-	        CSAwayView *awayView = awayController.awayView;
-	        if (awayView.passcodeFieldIsOpen){
-	        	[awayView hidePasscodeUI];
-	        }
+	if (success) {
+		CSAwayController *awayController =
+			[CSAwayController sharedAwayController];
+
+		if ([awayController isLocked]) {
+			[awayController _sendToDeviceLockOwnerDeviceUnlockSucceeded];
+
+			if (CLSShouldPlayLockSounds()) {
+				AudioServicesPlaySystemSound(1101);
+			}
+
+			CSAwayView *awayView = awayController.awayView;
+
+			if (awayView.passcodeFieldIsOpen) {
+				[awayView hidePasscodeUI];
+			}
+
 			[awayController animateUnlock];
 		}
-		return YES;
 	}
-	return NO;
+
+	return success;
 }
 
--(BOOL)_attemptUnlockWithPasscode:(id)arg1 mesa:(BOOL)arg2 finishUIUnlock:(BOOL)arg3{
-	if (%orig){
-		CSAwayController *awayController = [CSAwayController sharedAwayController];
-		if ([awayController isLocked]){
-			[awayController _sendToDeviceLockOwnerDeviceUnlockSucceeded];
-			if (CLSShouldPlayLockSounds())
-	        	AudioServicesPlaySystemSound(1101);
+-(BOOL)_attemptUnlockWithPasscode:(id)arg1
+							mesa:(BOOL)arg2
+				  finishUIUnlock:(BOOL)arg3 {
+	BOOL success = %orig;
 
-	        CSAwayView *awayView = awayController.awayView;
-	        if (awayView.passcodeFieldIsOpen){
-	        	[awayView hidePasscodeUI];
-	        }
+	if (success) {
+		CSAwayController *awayController =
+			[CSAwayController sharedAwayController];
+
+		if ([awayController isLocked]) {
+			[awayController _sendToDeviceLockOwnerDeviceUnlockSucceeded];
+
+			if (CLSShouldPlayLockSounds()) {
+				AudioServicesPlaySystemSound(1101);
+			}
+
+			CSAwayView *awayView = awayController.awayView;
+
+			if (awayView.passcodeFieldIsOpen) {
+				[awayView hidePasscodeUI];
+			}
+
 			[awayController animateUnlock];
 		}
-		return YES;
 	}
-	return NO;
+
+	return success;
 }
 %end
 
