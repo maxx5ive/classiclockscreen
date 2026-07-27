@@ -18,30 +18,57 @@ jobs:
 
       - name: Instalar Theos
         run: |
-          rm -rf theos
-          git clone --recursive https://github.com/theos/theos.git theos
+          rm -rf "$GITHUB_WORKSPACE/theos"
+          git clone --recursive https://github.com/theos/theos.git "$GITHUB_WORKSPACE/theos"
+          test -f "$GITHUB_WORKSPACE/theos/makefiles/common.mk"
 
       - name: Instalar SDK de iOS 10.3
         run: |
-          rm -rf theos/sdks
-          git clone --depth 1 https://github.com/theos/sdks.git theos/sdks
-          test -d theos/sdks/iPhoneOS10.3.sdk
+          rm -rf "$GITHUB_WORKSPACE/theos/sdks"
+          git clone --depth 1 https://github.com/theos/sdks.git "$GITHUB_WORKSPACE/theos/sdks"
+          test -d "$GITHUB_WORKSPACE/theos/sdks/iPhoneOS10.3.sdk"
 
-      - name: Preparar ClassicLockScreen para iOS 10
+      - name: Adaptar proyecto antiguo
         run: |
-          printf 'TARGET = iphone:clang:10.3:10.0\n' | cat - Makefile > Makefile.tmp
-          mv Makefile.tmp Makefile
+          export THEOS="$GITHUB_WORKSPACE/theos"
+
+          # Sustituir las rutas relativas antiguas de Theos
+          find . -type f -name Makefile -exec \
+            sed -i '' 's|include theos/makefiles/common.mk|include $(THEOS)/makefiles/common.mk|g' {} +
+
+          # El repositorio abierto no contiene estos tres subproyectos
+          sed -i '' '/^SUBPROJECTS += extrainst_$/d' Makefile
+          sed -i '' '/^SUBPROJECTS += prerm$/d' Makefile
+          sed -i '' '/^SUBPROJECTS += classiclockscreenextractlegacy$/d' Makefile
+
+          # El iPhone 5s usa arm64
+          sed -i '' 's/^ARCHS = armv7 arm64$/ARCHS = arm64/' classiclockscreensettings/Makefile
+
+          # Identificar nuestra compilación
           sed -i '' 's/^Version:.*/Version: 4.0-oss/' control
+
+          echo "Makefile principal:"
+          grep -n "common.mk\|SUBPROJECTS" Makefile
+
+          echo "Makefile de ajustes:"
+          grep -n "ARCHS\|common.mk" classiclockscreensettings/Makefile
 
       - name: Compilar paquete rootful
         run: |
           export THEOS="$GITHUB_WORKSPACE/theos"
-          make clean
-          make package FINALPACKAGE=1
+
+          make clean package \
+            FINALPACKAGE=1 \
+            THEOS="$THEOS" \
+            TARGET="iphone:clang:10.3:10.0" \
+            ARCHS="arm64" \
+            THEOS_PLATFORM_DEB_COMPRESSION_TYPE="gzip" \
+            messages=yes
 
       - name: Mostrar archivo generado
         run: |
-          find packages -name "*.deb" -print
+          find packages -type f -name "*.deb" -print
+          ls -lh packages/
 
       - name: Guardar archivo DEB
         uses: actions/upload-artifact@v4
