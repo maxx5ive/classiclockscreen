@@ -13,32 +13,53 @@ jobs:
 
     steps:
       - name: Descargar código
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Seleccionar Xcode 15.4
+        shell: bash
         run: |
+          set -euo pipefail
+
           test -d /Applications/Xcode_15.4.app
           sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer
+
           xcodebuild -version
 
       - name: Instalar herramientas
+        shell: bash
         run: |
+          set -euo pipefail
+
           brew install ldid xz dpkg
 
       - name: Instalar Theos
+        shell: bash
         run: |
+          set -euo pipefail
+
           rm -rf "$GITHUB_WORKSPACE/theos"
-          git clone --recursive https://github.com/theos/theos.git "$GITHUB_WORKSPACE/theos"
+
+          git clone --recursive \
+            https://github.com/theos/theos.git \
+            "$GITHUB_WORKSPACE/theos"
+
           test -f "$GITHUB_WORKSPACE/theos/makefiles/common.mk"
 
       - name: Instalar y corregir SDK de iOS 10.3
         shell: bash
         run: |
+          set -euo pipefail
+
           rm -rf "$GITHUB_WORKSPACE/theos/sdks"
-          git clone --depth 1 https://github.com/theos/sdks.git "$GITHUB_WORKSPACE/theos/sdks"
+
+          git clone --depth 1 \
+            https://github.com/theos/sdks.git \
+            "$GITHUB_WORKSPACE/theos/sdks"
 
           SDK="$GITHUB_WORKSPACE/theos/sdks/iPhoneOS10.3.sdk"
+
           test -d "$SDK"
+          test -f "$SDK/usr/lib/libobjc.A.tbd"
 
           while IFS= read -r -d '' file; do
             sed -i '' \
@@ -47,34 +68,70 @@ jobs:
               -e 's/, i386//g' \
               -e 's/, x86_64//g' \
               "$file"
-          done < <(find "$SDK" -type f -name '*.tbd' -print0)
+          done < <(
+            find "$SDK" -type f -name '*.tbd' -print0
+          )
 
-          echo "Comprobando libobjc:"
+          echo "Contenido corregido de libobjc:"
           head -n 6 "$SDK/usr/lib/libobjc.A.tbd"
 
-      - name: Adaptar Makefiles antiguos
+          grep -q 'arm64' "$SDK/usr/lib/libobjc.A.tbd"
+
+          if grep -qE 'i386|x86_64' "$SDK/usr/lib/libobjc.A.tbd"; then
+            echo "libobjc todavía contiene arquitecturas de simulador."
+            exit 1
+          fi
+
+      - name: Adaptar proyecto antiguo
         shell: bash
         run: |
-          export THEOS="$GITHUB_WORKSPACE/theos"
+          set -euo pipefail
 
-          find . -type f -name Makefile -exec \
-            sed -i '' \
+          MAIN_MAKEFILE="Makefile"
+          SETTINGS_MAKEFILE="classiclockscreensettings/Makefile"
+          SETTINGS_SOURCE="classiclockscreensettings/ClassicLockScreenSettings.mm"
+
+          test -f "$MAIN_MAKEFILE"
+          test -f "$SETTINGS_MAKEFILE"
+          test -f "$SETTINGS_SOURCE"
+          test -f "control"
+
+          sed -i '' \
             's|include theos/makefiles/common.mk|include $(THEOS)/makefiles/common.mk|g' \
-            {} +
+            "$MAIN_MAKEFILE"
 
-          sed -i '' '/^SUBPROJECTS += extrainst_$/d' Makefile
-          sed -i '' '/^SUBPROJECTS += prerm$/d' Makefile
-          sed -i '' '/^SUBPROJECTS += classiclockscreenextractlegacy$/d' Makefile
+          sed -i '' \
+            's|include theos/makefiles/common.mk|include $(THEOS)/makefiles/common.mk|g' \
+            "$SETTINGS_MAKEFILE"
+
+          sed -i '' \
+            '/^SUBPROJECTS += extrainst_$/d' \
+            "$MAIN_MAKEFILE"
+
+          sed -i '' \
+            '/^SUBPROJECTS += prerm$/d' \
+            "$MAIN_MAKEFILE"
+
+          sed -i '' \
+            '/^SUBPROJECTS += classiclockscreenextractlegacy$/d' \
+            "$MAIN_MAKEFILE"
 
           sed -i '' \
             's/^ARCHS = armv7 arm64$/ARCHS = arm64/' \
-            classiclockscreensettings/Makefile
+            "$SETTINGS_MAKEFILE"
 
           sed -i '' \
             's/^Version:.*/Version: 4.0-oss/' \
             control
 
-          SETTINGS_MAKEFILE="classiclockscreensettings/Makefile"
+          if ! grep -q '^GO_EASY_ON_ME' "$MAIN_MAKEFILE"; then
+            {
+              printf 'GO_EASY_ON_ME = 1\n'
+              cat "$MAIN_MAKEFILE"
+            } > "$MAIN_MAKEFILE.tmp"
+
+            mv "$MAIN_MAKEFILE.tmp" "$MAIN_MAKEFILE"
+          fi
 
           if ! grep -q '^GO_EASY_ON_ME' "$SETTINGS_MAKEFILE"; then
             {
@@ -85,152 +142,75 @@ jobs:
             mv "$SETTINGS_MAKEFILE.tmp" "$SETTINGS_MAKEFILE"
           fi
 
-      - name: Corregir código antiguo
+          if ! grep -q \
+            'ClassicLockScreenSettings_CFLAGS.*Wno-deprecated-declarations' \
+            "$SETTINGS_MAKEFILE"
+          then
+            printf '\nClassicLockScreenSettings_CFLAGS += -Wno-deprecated-declarations -Wno-error=deprecated-declarations\n' \
+              >> "$SETTINGS_MAKEFILE"
+          fi
+
+          if ! grep -q \
+            '^#pragma clang diagnostic ignored "-Wdeprecated-declarations"' \
+            "$SETTINGS_SOURCE"
+          then
+            {
+              printf '#pragma clang diagnostic ignored "-Wdeprecated-declarations"\n'
+              cat "$SETTINGS_SOURCE"
+            } > "$SETTINGS_SOURCE.tmp"
+
+            mv "$SETTINGS_SOURCE.tmp" "$SETTINGS_SOURCE"
+          fi
+
+      - name: Comprobar correcciones existentes
         shell: bash
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
+          set -euo pipefail
 
-          drm = Path("DRM.pch")
-          drm_text = drm.read_text()
+          grep -q '#include <dlfcn.h>' DRM.pch
+          grep -q '#import <math.h>' CSLockScreenCameraViewController.mm
+          grep -q 'height = fabs(height);' CSLockScreenCameraViewController.mm
 
-          if "#include <dlfcn.h>" not in drm_text:
-              drm_text = "#include <dlfcn.h>\n" + drm_text
+          SUCCESS_COUNT="$(
+            grep -c 'BOOL success = %orig;' iOS10.xm || true
+          )"
 
-          drm.write_text(drm_text)
+          if [ "$SUCCESS_COUNT" -lt 2 ]; then
+            echo "Los dos métodos de desbloqueo de iOS10.xm no están corregidos."
+            exit 1
+          fi
 
-          camera = Path("CSLockScreenCameraViewController.mm")
-          camera_text = camera.read_text()
-          camera_text = camera_text.replace(
-              "#import <cmath>",
-              "#import <math.h>"
-          )
-          camera_text = camera_text.replace(
-              "height = std::abs(height);",
-              "height = fabs(height);"
-          )
-          camera.write_text(camera_text)
+          echo "Las correcciones del código fuente están presentes."
 
-          ios10 = Path("iOS10.xm")
-          ios10_text = ios10.read_text()
-
-          first_method = r"""-(BOOL)attemptUnlockWithPasscode:(id)arg1 {
-              BOOL success = %orig;
-
-              if (success) {
-                  CSAwayController *awayController =
-                      [CSAwayController sharedAwayController];
-
-                  if ([awayController isLocked]) {
-                      [awayController _sendToDeviceLockOwnerDeviceUnlockSucceeded];
-
-                      if (CLSShouldPlayLockSounds()) {
-                          AudioServicesPlaySystemSound(1101);
-                      }
-
-                      CSAwayView *awayView = awayController.awayView;
-
-                      if (awayView.passcodeFieldIsOpen) {
-                          [awayView hidePasscodeUI];
-                      }
-
-                      [awayController animateUnlock];
-                  }
-              }
-
-              return success;
-          }"""
-
-          second_method = r"""-(BOOL)_attemptUnlockWithPasscode:(id)arg1
-                                      mesa:(BOOL)arg2
-                            finishUIUnlock:(BOOL)arg3 {
-              BOOL success = %orig;
-
-              if (success) {
-                  CSAwayController *awayController =
-                      [CSAwayController sharedAwayController];
-
-                  if ([awayController isLocked]) {
-                      [awayController _sendToDeviceLockOwnerDeviceUnlockSucceeded];
-
-                      if (CLSShouldPlayLockSounds()) {
-                          AudioServicesPlaySystemSound(1101);
-                      }
-
-                      CSAwayView *awayView = awayController.awayView;
-
-                      if (awayView.passcodeFieldIsOpen) {
-                          [awayView hidePasscodeUI];
-                      }
-
-                      [awayController animateUnlock];
-                  }
-              }
-
-              return success;
-          }"""
-
-          ios10_text, first_count = re.subn(
-              r"-(BOOL)attemptUnlockWithPasscode:\(id\)arg1\s*\{.*?^\}",
-              first_method,
-              ios10_text,
-              count=1,
-              flags=re.MULTILINE | re.DOTALL,
-          )
-
-          ios10_text, second_count = re.subn(
-              r"-(BOOL)_attemptUnlockWithPasscode:\(id\)arg1\s+"
-              r"mesa:\(BOOL\)arg2\s+"
-              r"finishUIUnlock:\(BOOL\)arg3\s*\{.*?^\}",
-              second_method,
-              ios10_text,
-              count=1,
-              flags=re.MULTILINE | re.DOTALL,
-          )
-
-          if first_count != 1 or second_count != 1:
-              raise SystemExit(
-                  "No se pudieron localizar los dos métodos de desbloqueo de iOS10.xm"
-              )
-
-          ios10.write_text(ios10_text)
-
-          settings = Path(
-              "classiclockscreensettings/ClassicLockScreenSettings.mm"
-          )
-          settings_text = settings.read_text()
-
-          diagnostic = (
-              '#pragma clang diagnostic ignored '
-              '"-Wdeprecated-declarations"\n'
-          )
-
-          if diagnostic not in settings_text:
-              settings_text = diagnostic + settings_text
-
-          settings.write_text(settings_text)
-          PY
-
-      - name: Mostrar configuración final
+      - name: Mostrar configuración
         shell: bash
         run: |
-          echo "Xcode:"
+          set -euo pipefail
+
+          echo "Xcode seleccionado:"
           xcodebuild -version
 
+          echo
           echo "Makefile principal:"
-          grep -n "ARCHS\|GO_EASY\|SUBPROJECTS\|common.mk" Makefile
+          grep -n \
+            'ARCHS\|GO_EASY\|SUBPROJECTS\|common.mk' \
+            Makefile
 
-          echo "Makefile de ajustes:"
-          grep -n "ARCHS\|GO_EASY\|common.mk" \
+          echo
+          echo "Makefile de Ajustes:"
+          grep -n \
+            'ARCHS\|GO_EASY\|CFLAGS\|common.mk' \
             classiclockscreensettings/Makefile
 
-          echo "Versión del paquete:"
-          grep -n "^Version:" control
+          echo
+          echo "Versión:"
+          grep -n '^Version:' control
 
       - name: Compilar paquete rootful
         shell: bash
         run: |
+          set -euo pipefail
+
           export THEOS="$GITHUB_WORKSPACE/theos"
           export GO_EASY_ON_ME=1
 
@@ -240,25 +220,44 @@ jobs:
             THEOS="$THEOS" \
             TARGET="iphone:clang:10.3:10.0" \
             ARCHS="arm64" \
+            THEOS_PACKAGE_SCHEME="" \
             THEOS_PLATFORM_DEB_COMPRESSION_TYPE="gzip" \
             messages=yes
 
       - name: Comprobar archivo DEB
         shell: bash
         run: |
-          find packages -type f -name "*.deb" -print
-          ls -lh packages/
+          set -euo pipefail
 
-          DEB_COUNT="$(find packages -type f -name '*.deb' | wc -l | tr -d ' ')"
+          DEB="$(
+            find packages \
+              -maxdepth 1 \
+              -type f \
+              -name '*.deb' \
+              -print \
+              -quit
+          )"
 
-          if [ "$DEB_COUNT" -eq 0 ]; then
+          if [ -z "$DEB" ]; then
             echo "No se generó ningún archivo DEB."
             exit 1
           fi
 
+          echo "Paquete generado:"
+          ls -lh "$DEB"
+
+          echo
+          echo "Información del paquete:"
+          dpkg-deb --info "$DEB"
+
+          echo
+          echo "SHA-256:"
+          shasum -a 256 "$DEB"
+
       - name: Guardar archivo DEB
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ClassicLockScreen-deb
           path: packages/*.deb
           if-no-files-found: error
+          retention-days: 7
