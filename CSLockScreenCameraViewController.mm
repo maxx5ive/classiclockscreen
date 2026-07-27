@@ -9,7 +9,7 @@
 #import "CSLockScreenCameraViewController.h"
 #import "Headers.h"
 #import <objc/runtime.h>
-#import <cmath>
+#import <math.h>
 
 @interface CSLockScreenCameraViewController ()
 
@@ -74,7 +74,7 @@
 }
 
 - (void)setHeight:(CGFloat)height {
-    height = std::abs(height);
+    height = fabs(height);
     CGRect camFrame = _cameraScreenshotContainer.frame;
     camFrame.size.height = height;
     camFrame.origin.y = self.view.frame.size.height - camFrame.size.height;
