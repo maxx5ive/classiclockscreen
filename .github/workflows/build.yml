@@ -3,9 +3,13 @@ name: Build ClassicLockScreen
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: macos-14
+    timeout-minutes: 30
 
     steps:
       - name: Descargar código
@@ -13,12 +17,12 @@ jobs:
 
       - name: Seleccionar Xcode 15.4
         run: |
+          test -d /Applications/Xcode_15.4.app
           sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer
           xcodebuild -version
 
       - name: Instalar herramientas
         run: |
-          brew update
           brew install ldid xz dpkg
 
       - name: Instalar Theos
@@ -45,39 +49,212 @@ jobs:
               "$file"
           done < <(find "$SDK" -type f -name '*.tbd' -print0)
 
-          echo "Comprobación de libobjc:"
+          echo "Comprobando libobjc:"
           head -n 6 "$SDK/usr/lib/libobjc.A.tbd"
 
-      - name: Adaptar proyecto antiguo
+      - name: Adaptar Makefiles antiguos
+        shell: bash
         run: |
           export THEOS="$GITHUB_WORKSPACE/theos"
 
           find . -type f -name Makefile -exec \
-            sed -i '' 's|include theos/makefiles/common.mk|include $(THEOS)/makefiles/common.mk|g' {} +
+            sed -i '' \
+            's|include theos/makefiles/common.mk|include $(THEOS)/makefiles/common.mk|g' \
+            {} +
 
           sed -i '' '/^SUBPROJECTS += extrainst_$/d' Makefile
           sed -i '' '/^SUBPROJECTS += prerm$/d' Makefile
           sed -i '' '/^SUBPROJECTS += classiclockscreenextractlegacy$/d' Makefile
 
-          sed -i '' 's/^ARCHS = armv7 arm64$/ARCHS = arm64/' classiclockscreensettings/Makefile
-          sed -i '' 's/^Version:.*/Version: 4.0-oss/' control
+          sed -i '' \
+            's/^ARCHS = armv7 arm64$/ARCHS = arm64/' \
+            classiclockscreensettings/Makefile
 
-                - name: Compilar paquete rootful
+          sed -i '' \
+            's/^Version:.*/Version: 4.0-oss/' \
+            control
+
+          SETTINGS_MAKEFILE="classiclockscreensettings/Makefile"
+
+          if ! grep -q '^GO_EASY_ON_ME' "$SETTINGS_MAKEFILE"; then
+            {
+              printf 'GO_EASY_ON_ME = 1\n'
+              cat "$SETTINGS_MAKEFILE"
+            } > "$SETTINGS_MAKEFILE.tmp"
+
+            mv "$SETTINGS_MAKEFILE.tmp" "$SETTINGS_MAKEFILE"
+          fi
+
+      - name: Corregir código antiguo
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          drm = Path("DRM.pch")
+          drm_text = drm.read_text()
+
+          if "#include <dlfcn.h>" not in drm_text:
+              drm_text = "#include <dlfcn.h>\n" + drm_text
+
+          drm.write_text(drm_text)
+
+          camera = Path("CSLockScreenCameraViewController.mm")
+          camera_text = camera.read_text()
+          camera_text = camera_text.replace(
+              "#import <cmath>",
+              "#import <math.h>"
+          )
+          camera_text = camera_text.replace(
+              "height = std::abs(height);",
+              "height = fabs(height);"
+          )
+          camera.write_text(camera_text)
+
+          ios10 = Path("iOS10.xm")
+          ios10_text = ios10.read_text()
+
+          first_method = r"""-(BOOL)attemptUnlockWithPasscode:(id)arg1 {
+              BOOL success = %orig;
+
+              if (success) {
+                  CSAwayController *awayController =
+                      [CSAwayController sharedAwayController];
+
+                  if ([awayController isLocked]) {
+                      [awayController _sendToDeviceLockOwnerDeviceUnlockSucceeded];
+
+                      if (CLSShouldPlayLockSounds()) {
+                          AudioServicesPlaySystemSound(1101);
+                      }
+
+                      CSAwayView *awayView = awayController.awayView;
+
+                      if (awayView.passcodeFieldIsOpen) {
+                          [awayView hidePasscodeUI];
+                      }
+
+                      [awayController animateUnlock];
+                  }
+              }
+
+              return success;
+          }"""
+
+          second_method = r"""-(BOOL)_attemptUnlockWithPasscode:(id)arg1
+                                      mesa:(BOOL)arg2
+                            finishUIUnlock:(BOOL)arg3 {
+              BOOL success = %orig;
+
+              if (success) {
+                  CSAwayController *awayController =
+                      [CSAwayController sharedAwayController];
+
+                  if ([awayController isLocked]) {
+                      [awayController _sendToDeviceLockOwnerDeviceUnlockSucceeded];
+
+                      if (CLSShouldPlayLockSounds()) {
+                          AudioServicesPlaySystemSound(1101);
+                      }
+
+                      CSAwayView *awayView = awayController.awayView;
+
+                      if (awayView.passcodeFieldIsOpen) {
+                          [awayView hidePasscodeUI];
+                      }
+
+                      [awayController animateUnlock];
+                  }
+              }
+
+              return success;
+          }"""
+
+          ios10_text, first_count = re.subn(
+              r"-(BOOL)attemptUnlockWithPasscode:\(id\)arg1\s*\{.*?^\}",
+              first_method,
+              ios10_text,
+              count=1,
+              flags=re.MULTILINE | re.DOTALL,
+          )
+
+          ios10_text, second_count = re.subn(
+              r"-(BOOL)_attemptUnlockWithPasscode:\(id\)arg1\s+"
+              r"mesa:\(BOOL\)arg2\s+"
+              r"finishUIUnlock:\(BOOL\)arg3\s*\{.*?^\}",
+              second_method,
+              ios10_text,
+              count=1,
+              flags=re.MULTILINE | re.DOTALL,
+          )
+
+          if first_count != 1 or second_count != 1:
+              raise SystemExit(
+                  "No se pudieron localizar los dos métodos de desbloqueo de iOS10.xm"
+              )
+
+          ios10.write_text(ios10_text)
+
+          settings = Path(
+              "classiclockscreensettings/ClassicLockScreenSettings.mm"
+          )
+          settings_text = settings.read_text()
+
+          diagnostic = (
+              '#pragma clang diagnostic ignored '
+              '"-Wdeprecated-declarations"\n'
+          )
+
+          if diagnostic not in settings_text:
+              settings_text = diagnostic + settings_text
+
+          settings.write_text(settings_text)
+          PY
+
+      - name: Mostrar configuración final
+        shell: bash
+        run: |
+          echo "Xcode:"
+          xcodebuild -version
+
+          echo "Makefile principal:"
+          grep -n "ARCHS\|GO_EASY\|SUBPROJECTS\|common.mk" Makefile
+
+          echo "Makefile de ajustes:"
+          grep -n "ARCHS\|GO_EASY\|common.mk" \
+            classiclockscreensettings/Makefile
+
+          echo "Versión del paquete:"
+          grep -n "^Version:" control
+
+      - name: Compilar paquete rootful
+        shell: bash
         run: |
           export THEOS="$GITHUB_WORKSPACE/theos"
           export GO_EASY_ON_ME=1
 
           make clean package \
             FINALPACKAGE=1 \
+            GO_EASY_ON_ME=1 \
             THEOS="$THEOS" \
             TARGET="iphone:clang:10.3:10.0" \
             ARCHS="arm64" \
             THEOS_PLATFORM_DEB_COMPRESSION_TYPE="gzip" \
             messages=yes
-      - name: Mostrar archivo generado
+
+      - name: Comprobar archivo DEB
+        shell: bash
         run: |
           find packages -type f -name "*.deb" -print
           ls -lh packages/
+
+          DEB_COUNT="$(find packages -type f -name '*.deb' | wc -l | tr -d ' ')"
+
+          if [ "$DEB_COUNT" -eq 0 ]; then
+            echo "No se generó ningún archivo DEB."
+            exit 1
+          fi
 
       - name: Guardar archivo DEB
         uses: actions/upload-artifact@v4
