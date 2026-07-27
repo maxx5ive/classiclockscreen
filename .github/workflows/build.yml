@@ -62,12 +62,13 @@ jobs:
           sed -i '' 's/^ARCHS = armv7 arm64$/ARCHS = arm64/' classiclockscreensettings/Makefile
           sed -i '' 's/^Version:.*/Version: 4.0-oss/' control
 
-      - name: Compilar paquete rootful
+            - name: Compilar paquete rootful
         run: |
           export THEOS="$GITHUB_WORKSPACE/theos"
 
           make clean package \
             FINALPACKAGE=1 \
+            GO_EASY_ON_ME=1 \
             THEOS="$THEOS" \
             TARGET="iphone:clang:10.3:10.0" \
             ARCHS="arm64" \
